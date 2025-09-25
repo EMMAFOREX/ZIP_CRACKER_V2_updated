@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZIP Password Recovery Tool</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ZIP Password Recovery Tool</h1>
+            <p class="disclaimer">For recovering your own forgotten passwords only</p>
+        </header>
+        
+        <div class="content">
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon">📁</div>
+                <p>Drag & drop your ZIP file here or click to browse</p>
+                <input type="file" id="fileInput" class="file-input" accept=".zip">
+                <div class="file-name" id="fileName">No file selected</div>
+            </div>
+            
+            <div class="settings">
+                <div class="setting-group">
+                    <label for="minLength">Minimum Password Length</label>
+                    <input type="number" id="minLength" value="1" min="1" max="8">
+                </div>
+                
+                <div class="setting-group">
+                    <label for="maxLength">Maximum Password Length</label>
+                    <input type="number" id="maxLength" value="4" min="1" max="8">
+                </div>
+                
+                <div class="setting-group">
+                    <label>Character Set</label>
+                    <div class="checkbox-group">
+                        <label><input type="checkbox" id="numeric" checked> Numeric (0-9)</label>
+                        <label><input type="checkbox" id="lowercase" checked> Lowercase (a-z)</label>
+                        <label><input type="checkbox" id="uppercase"> Uppercase (A-Z)</label>
+                        <label><input type="checkbox" id="special"> Special Characters</label>
+                    </div>
+                </div>
+                
+                <div class="warning">
+                    <strong>Note:</strong> Maximum length is limited to 8 characters for safety. 
+                    Higher lengths will take exponentially longer to process.
+                </div>
+            </div>
+            
+            <button id="startBtn" class="btn">Start Recovery</button>
+            
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-header">
+                    <span>Progress</span>
+                    <span id="progressPercent">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress" id="progressBar"></div>
+                </div>
+                <div class="attempts" id="attempts">Attempts: 0</div>
+                <div class="current-password" id="currentPassword">Trying: -</div>
+            </div>
+            
+            <div class="status" id="status"></div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const uploadArea = document.getElementById('uploadArea');
+            const fileInput = document.getElementById('fileInput');
+            const fileName = document.getElementById('fileName');
+            const startBtn = document.getElementById('startBtn');
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            const progressPercent = document.getElementById('progressPercent');
+            const attempts = document.getElementById('attempts');
+            const currentPassword = document.getElementById('currentPassword');
+            const status = document.getElementById('status');
+            
+            let selectedFile = null;
+            let currentTaskId = null;
+            let progressInterval = null;
+            
+            // File upload handling
+            uploadArea.addEventListener('click', () => fileInput.click());
+            
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                
+                if (e.dataTransfer.files.length) {
+                    handleFileSelect(e.dataTransfer.files[0]);
+                }
+            });
+            
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files.length) {
+                    handleFileSelect(e.target.files[0]);
+                }
+            });
+            
+            function handleFileSelect(file) {
+                if (file && file.name.toLowerCase().endsWith('.zip')) {
+                    selectedFile = file;
+                    fileName.textContent = file.name;
+                    resetUI();
+                } else {
+                    alert('Please select a valid ZIP file.');
+                    fileInput.value = '';
+                }
+            }
+            
+            // Start recovery process
+            startBtn.addEventListener('click', startRecovery);
+            
+            function startRecovery() {
+                if (!selectedFile) {
+                    alert('Please select a ZIP file first.');
+                    return;
+                }
+                
+                const minLength = parseInt(document.getElementById('minLength').value);
+                const maxLength = parseInt(document.getElementById('maxLength').value);
+                
+                if (minLength > maxLength) {
+                    alert('Minimum length cannot be greater than maximum length.');
+                    return;
+                }
+                
+                if (maxLength > 8) {
+                    alert('Maximum length cannot exceed 8 characters.');
+                    return;
+                }
+                
+                // Get character set options
+                const charSet = {
+                    numeric: document.getElementById('numeric').checked,
+                    lowercase: document.getElementById('lowercase').checked,
+                    uppercase: document.getElementById('uppercase').checked,
+                    special: document.getElementById('special').checked
+                };
+                
+                // At least one character set must be selected
+                if (!charSet.numeric && !charSet.lowercase && !charSet.uppercase && !charSet.special) {
+                    alert('Please select at least one character set.');
+                    return;
+                }
+                
+                // Create FormData for upload
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+                formData.append('min_length', minLength);
+                formData.append('max_length', maxLength);
+                
+                // Add character set options
+                if (charSet.numeric) formData.append('numeric', 'true');
+                if (charSet.lowercase) formData.append('lowercase', 'true');
+                if (charSet.uppercase) formData.append('uppercase', 'true');
+                if (charSet.special) formData.append('special', 'true');
+                
+                // Reset UI
+                resetUI();
+                progressContainer.style.display = 'block';
+                startBtn.disabled = true;
+                
+                // Send request to backend
+                fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    currentTaskId = data.task_id;
+                    // Start polling for progress
+                    progressInterval = setInterval(checkProgress, 1000);
+                })
+                .catch(error => {
+                    showStatus('error', error.message);
+                    startBtn.disabled = false;
+                });
+            }
+            
+            function checkProgress() {
+                if (!currentTaskId) return;
+                
+                fetch(`/progress/${currentTaskId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            clearInterval(progressInterval);
+                            showStatus('error', data.error);
+                            startBtn.disabled = false;
+                            return;
+                        }
+                        
+                        // Update progress
+                        progressBar.style.width = `${data.progress}%`;
+                        progressPercent.textContent = `${Math.round(data.progress)}%`;
+                        
+                        if (data.attempts) {
+                            attempts.textContent = `Attempts: ${data.attempts.toLocaleString()}`;
+                        }
+                        
+                        if (data.current_password) {
+                            currentPassword.textContent = `Trying: ${data.current_password}`;
+                        }
+                        
+                        // Check if task is complete
+                        if (data.status === 'success') {
+                            clearInterval(progressInterval);
+                            showStatus('success', `Password found: ${data.password}`);
+                            startBtn.disabled = false;
+                        } else if (data.status === 'failed' || data.status === 'error') {
+                            clearInterval(progressInterval);
+                            showStatus('error', data.message || 'Password recovery failed');
+                            startBtn.disabled = false;
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error checking progress:', error);
+                    });
+            }
+            
+            function showStatus(type, message) {
+                status.textContent = message;
+                status.className = 'status ' + type;
+                status.style.display = 'block';
+            }
+            
+            function resetUI() {
+                progressBar.style.width = '0%';
+                progressPercent.textContent = '0%';
+                attempts.textContent = 'Attempts: 0';
+                currentPassword.textContent = 'Trying: -';
+                status.className = 'status';
+                status.style.display = 'none';
+                
+                if (progressInterval) {
+                    clearInterval(progressInterval);
+                    progressInterval = null;
+                }
+                
+                currentTaskId = null;
+            }
+        });
+    </script>
+</body>
+</html>
